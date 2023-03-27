@@ -35,37 +35,49 @@ import sys
 import time
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "comfy"))
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "comfy"))
 sys.path.append('../ComfyUI')
 
 
 # GLOBALS
 MIDAS_INSTALLED = False
 CUSTOM_NODES_DIR = os.getcwd()+'/ComfyUI/custom_nodes'
-WAS_SUITE_ROOT = ( CUSTOM_NODES_DIR if not os.path.exists(os.path.join(CUSTOM_NODES_DIR, 'was-nodes-suite-comfyui')) else os.path.join(CUSTOM_NODES_DIR, 'was-nodes-suite-comfyui') )
+WAS_SUITE_ROOT = (CUSTOM_NODES_DIR if not os.path.exists(os.path.join(CUSTOM_NODES_DIR,
+                  'was-nodes-suite-comfyui')) else os.path.join(CUSTOM_NODES_DIR, 'was-nodes-suite-comfyui'))
 WAS_DATABASE = os.path.join(WAS_SUITE_ROOT, 'was_suite_settings.json')
 
 #! SUITE SPECIFIC CLASSES & FUNCTIONS
 
 # Freeze PIP modules
+
+
 def packages() -> list[str]:
     import sys
     import subprocess
     return [r.decode().split('==')[0] for r in subprocess.check_output([sys.executable, '-m', 'pip', 'freeze']).split()]
 
 # Tensor to PIL
+
+
 def tensor2pil(image: torch.Tensor) -> Image.Image:
     return Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
 
 # Convert PIL to Tensor
+
+
 def pil2tensor(image: Image.Image) -> torch.Tensor:
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
 
 # PIL Hex
+
+
 def pil2hex(image: torch.Tensor) -> str:
     return hashlib.sha256(np.array(tensor2pil(image)).astype(np.uint16).tobytes()).hexdigest()
 
 # Median Filter
+
+
 def medianFilter(img, diameter, sigmaColor, sigmaSpace):
     import cv2 as cv
     diameter = int(diameter)
@@ -76,8 +88,9 @@ def medianFilter(img, diameter, sigmaColor, sigmaSpace):
     img = cv.bilateralFilter(img, diameter, sigmaColor, sigmaSpace)
     img = cv.cvtColor(np.array(img), cv.COLOR_BGR2RGB)
     return Image.fromarray(img).convert('RGB')
-    
+
 # WAS SETTINGS MANAGER
+
 
 class WASDatabase:
     """
@@ -98,6 +111,7 @@ class WASDatabase:
             specified key and category from the database.
         _save(): Saves the current state of the database to the JSON file.
     """
+
     def __init__(self, filepath):
         self.filepath = filepath
         try:
@@ -105,14 +119,13 @@ class WASDatabase:
                 self.data = json.load(f)
         except FileNotFoundError:
             self.data = {}
-    
+
     def insert(self, category, key, value):
         if category not in self.data:
             self.data[category] = {}
         self.data[category][key] = value
         self._save()
 
-    
     def get(self, category, key):
         if category in self.data:
             return self.data[category].get(key, None)
@@ -127,6 +140,7 @@ class WASDatabase:
     def _save(self):
         with open(self.filepath, 'w') as f:
             json.dump(self.data, f)
+
 
 # Initialize the settings database
 WDB = WASDatabase(WAS_DATABASE)
@@ -663,14 +677,16 @@ class WAS_Image_Rescale:
             'bicubic': 3,
             'lanczos': 1
         }
-        
+
         # Apply supersample
         if supersample == 'true':
-            image = image.resize((new_width * 8, new_height * 8), resample=Image.Resampling(resample_filters[resample]))
+            image = image.resize((new_width * 8, new_height * 8),
+                                 resample=Image.Resampling(resample_filters[resample]))
 
         # Resize the image using the given resampling filter
-        resized_image = image.resize((new_width, new_height), resample=Image.Resampling(resample_filters[resample]))
-        
+        resized_image = image.resize(
+            (new_width, new_height), resample=Image.Resampling(resample_filters[resample]))
+
         return resized_image
 
 
@@ -2049,7 +2065,8 @@ class WAS_Image_Save:
         # Setup custom path or default
         if output_path.strip() != '':
             if not os.path.exists(output_path.strip()):
-                print(f'\033[34mWAS NS\033[0m Error: The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
+                print(
+                    f'\033[34mWAS NS\033[0m Error: The path `{output_path.strip()}` specified doesn\'t exist! Creating directory.')
                 os.mkdir(output_path.strip())
             else:
                 self.output_dir = os.path.normpath(output_path.strip())
@@ -2222,7 +2239,8 @@ class WAS_Image_To_Mask:
 
     def image_to_mask(self, image, channel):
         i = tensor2pil(image)
-        mask = np.array(i.getchannel(self.channels[channel])).astype(np.float32) / 255.0
+        mask = np.array(i.getchannel(self.channels[channel])).astype(
+            np.float32) / 255.0
         mask = 1. - torch.from_numpy(mask)
         return (mask, )
 
@@ -3150,7 +3168,6 @@ class WAS_Number_To_Int:
         return (int(number), )
 
 
-
 # NUMBER TO FLOAT
 
 class WAS_Number_To_Float:
@@ -3172,7 +3189,6 @@ class WAS_Number_To_Float:
 
     def return_constant_float(self, number):
         return (float(number), )
-
 
 
 # INT TO NUMBER
@@ -3198,7 +3214,6 @@ class WAS_Int_To_Number:
         return (int_input, )
 
 
-
 # NUMBER TO FLOAT
 
 class WAS_Float_To_Number:
@@ -3219,7 +3234,7 @@ class WAS_Float_To_Number:
     CATEGORY = "WAS Suite/Constant"
 
     def float_to_number(self, float_input):
-        return ( float_input, )
+        return (float_input, )
 
 
 # NUMBER PI
@@ -3352,11 +3367,13 @@ class WAS_Debug_Number_to_Console:
 
     def debug_to_console(self, number, label):
         if label.strip() != '':
-            print(f'\033[34mWAS Node Suite \033[33m{label}\033[0m:\n{number}\n')
+            print(
+                f'\033[34mWAS Node Suite \033[33m{label}\033[0m:\n{number}\n')
         else:
-            print(f'\033[34mWAS Node Suite \033[33mDebug to Console\033[0m:\n{number}\n')
+            print(
+                f'\033[34mWAS Node Suite \033[33mDebug to Console\033[0m:\n{number}\n')
         return (number, )
-        
+
     @classmethod
     def IS_CHANGED(cls, **kwargs):
         return float("NaN")
