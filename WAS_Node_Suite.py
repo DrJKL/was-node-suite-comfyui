@@ -14,6 +14,7 @@
 # THE SOFTWARE.
 
 
+import math
 from PIL import Image, ImageFilter, ImageEnhance, ImageOps, ImageDraw, ImageChops
 from PIL.PngImagePlugin import PngInfo
 from io import BytesIO
