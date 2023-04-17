@@ -24,9 +24,20 @@
  - BLIP Analyze Image: Get a text caption from a image, or interrogate the image with a question.
    - Model will download automatically from default URL, but you can point the download to another location/caption model in `was_suite_config`
    - Models will be stored in `ComfyUI/models/blip/checkpoints/`
+ - SAM Model Loader: Load a SAM Segmentation model
+ - SAM Parameters: Define your SAM parameters for segmentation of a image
+ - SAM Parameters Combine: Combine SAM parameters
+ - SAM Image Mask: SAM image masking
+ - Image Bounds: Bounds a image
+ - Inset Image Bounds: Inset a image bounds
+ - Bounded Image Blend: Blend bounds image
+ - Bounded Image Blend with Mask: Blend a bounds image by mask
+ - Bounded Image Crop: Crop a bounds image
+ - Bounded Image Crop with Mask: Crop a bounds image by mask
  - CLIPTextEncode (NSP): Parse Noodle Soup Prompts
+ - Conditioning Input Switch: Switch between two conditioning inputs.
  - Constant Number
- - Dictionary to Console: Print a dictionary input to the console	
+ - Dictionary to Console: Print a dictionary input to the console
  - Image Analyze
    - Black White Levels
    - RGB Levels
@@ -52,6 +63,7 @@
  - Image Generate Gradient: Generate a gradient map with desired stops and colors
  - Image High Pass Filter: Apply a high frequency pass to the image returning the details
  - Image History Loader: Load images from history based on the Load Image Batch node. Can define max history in config file. *(requires restart to show last sessions files at this time)*
+ - Image Input Switch: Switch between two image inputs
  - Image Levels Adjustment: Adjust the levels of a image
  - Image Load: Load a *image* from any path on the system, or a url starting with `http`
  - Image Median Filter: Apply a median filter to a image, such as to smooth out details in surfaces
@@ -76,6 +88,7 @@
  - Image Select Color: Return the select image only on a black canvas
  - Image Shadows and Highlights: Adjust the shadows and highlights of an image
  - Image Size to Number: Get the `width` and `height` of an input image to use with **Number** nodes. 
+ - Image Stitch: Stitch images together on different sides with optional feathering blending between them. 
  - Image Style Filter: Style a image with Pilgram instragram-like filters
    - Depends on `pilgram` module
  - Image Threshold: Return the desired threshold range of a image
@@ -95,12 +108,17 @@
    - pattern is a glob that allows you to do things like `**/*` to get all files in the directory and subdirectory
      or things like `*.jpg` to select only JPEG images in the directory specified. 
  - Latent Noise Injection: Inject latent noise into a latent image
- - Latent Upscale by Factor: Upscale a latent image by a facto
+ - Latent Size to Number: Latent sizes in tensor width/height
+ - Latent Upscale by Factor: Upscale a latent image by a factor
+ - Latent Input Switch: Switch between two latent inputs 
+ - Logic Boolean: A simple `1` or `0` output to use with logic
  - MiDaS Depth Approximation: Produce a depth approximation of a single image input
  - MiDaS Mask Image: Mask a input image using MiDaS with a desired color
  - Number Operation
  - Number to Seed
  - Number to Float
+ - Number Input Switch: Switch between two number inputs
+ - Number Input Condition: Compare between two inputs or against the A input
  - Number to Int
  - Number to String
  - Number to Text
@@ -116,6 +134,7 @@
  - Text Find and Replace: Find and replace a substring in a string
  - Text Find and Replace by Dictionary: Replace substrings in a ASCII text input with a dictionary. 
    - The dictionary keys are used as the key to replace, and the list of lines it contains chosen at random based on the seed. 
+ - Text Input Switch: Switch between two text inputs
  - Text Multiline: Write a multiline text string
  - Text Parse A1111 Embeddings: Convert embeddings filenames in your prompts to `embedding:[filename]]` format based on your `/ComfyUI/models/embeddings/` files. 
  - Text Parse Noodle Soup Prompts: Parse NSP in a text input

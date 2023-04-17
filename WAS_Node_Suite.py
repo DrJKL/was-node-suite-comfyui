@@ -101,6 +101,9 @@ was_conf_template = {
                     "webui_styles_persistent_update": True,
                     "blip_model_url": "https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_base_capfilt_large.pth",
                     "blip_model_vqa_url": "https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model_base_vqa_capfilt_large.pth",
+                    "sam_model_vith_url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
+                    "sam_model_vitl_url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth",
+                    "sam_model_vitb_url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth",
                     "history_display_limit": 32,
                     "use_legacy_ascii_text": True, # ASCII Legacy is True For Now
                 }
@@ -136,6 +139,7 @@ if not os.path.exists(WAS_CONFIG_FILE):
         print(f'\033[34mWAS Node Suite:\033[0m Created default conf file at `{WAS_CONFIG_FILE}`.')
     else:
         print(f'\033[34mWAS Node Suite\033[0m Error: Unable to create default conf file at `{WAS_CONFIG_FILE}`.')
+    
 else:
     was_config = getSuiteConfig()
     
@@ -147,14 +151,6 @@ else:
        
     if update_config:
         updateSuiteConfig(was_config)
-        
-    # SET TEXT TYPE
-    TEXT_TYPE = "TEXT"
-    if was_config.__contains__('use_legacy_ascii_text'):
-        if was_config['use_legacy_ascii_text']:
-            TEXT_TYPE = "ASCII"
-            print(f'\033[34mWAS Node Suite\033[0m Warning: use_legacy_ascii_text is `True` in `was_suite_config.json`. `ASCII` type is deprecated and the default will be `TEXT` in the future.')
- 
     
     # Convert WebUI Styles
     if was_config.__contains__('webui_styles'):
@@ -192,7 +188,13 @@ else:
             
             print(f'\033[34mWAS Node Suite:\033[0m Styles import complete.')
 
-            
+# SET TEXT TYPE
+TEXT_TYPE = "TEXT"
+if was_config.__contains__('use_legacy_ascii_text'):
+    if was_config['use_legacy_ascii_text']:
+        TEXT_TYPE = "ASCII"
+        print(f'\033[34mWAS Node Suite\033[0m Warning: use_legacy_ascii_text is `True` in `was_suite_config.json`. `ASCII` type is deprecated and the default will be `TEXT` in the future.')
+ 
 
 #! SUITE SPECIFIC CLASSES & FUNCTIONS
 
@@ -213,6 +215,25 @@ def pil2tensor(image):
 # PIL Hex
 def pil2hex(image):
     return hashlib.sha256(np.array(tensor2pil(image)).astype(np.uint16).tobytes()).hexdigest()
+
+# Tensor to SAM-compatible NumPy
+def tensor2sam(image):
+    # Convert tensor to numpy array in HWC uint8 format with pixel values in [0, 255]
+    sam_image = np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8)
+    # Transpose the image to HWC format if it's in CHW format
+    if sam_image.shape[0] == 3:
+        sam_image = np.transpose(sam_image, (1, 2, 0))
+    return sam_image
+
+# SAM-compatible NumPy to tensor
+def sam2tensor(image):
+    # Convert the image to float32 and normalize the pixel values to [0, 1]
+    float_image = image.astype(np.float32) / 255.0
+    # Transpose the image from HWC format to CHW format
+    chw_image = np.transpose(float_image, (2, 0, 1))
+    # Convert the numpy array to a tensor
+    tensor_image = torch.from_numpy(chw_image)
+    return tensor_image
 
 # Median Filter
 def medianFilter(img, diameter, sigmaColor, sigmaSpace):
@@ -453,6 +474,91 @@ class WAS_Filter_Class():
         buf.seek(0)
         img = Image.open(buf)
         return img
+        
+    def stitch_image(self, image_a, image_b, mode='right', fuzzy_zone=50):
+
+        def linear_gradient(start_color, end_color, size, start, end, mode='horizontal'):
+            width, height = size
+            gradient = Image.new('RGB', (width, height), end_color)
+            draw = ImageDraw.Draw(gradient)
+
+            for i in range(0, start):
+                if mode == "horizontal":
+                    draw.line((i, 0, i, height-1), start_color)
+                elif mode == "vertical":
+                    draw.line((0, i, width-1, i), start_color)
+
+            for i in range(start, end):
+                if mode == "horizontal":
+                    curr_color = (
+                        int(start_color[0] + (float(i - start) / (end - start)) * (end_color[0] - start_color[0])),
+                        int(start_color[1] + (float(i - start) / (end - start)) * (end_color[1] - start_color[1])),
+                        int(start_color[2] + (float(i - start) / (end - start)) * (end_color[2] - start_color[2]))
+                    )
+                    draw.line((i, 0, i, height-1), curr_color)
+                elif mode == "vertical":
+                    curr_color = (
+                        int(start_color[0] + (float(i - start) / (end - start)) * (end_color[0] - start_color[0])),
+                        int(start_color[1] + (float(i - start) / (end - start)) * (end_color[1] - start_color[1])),
+                        int(start_color[2] + (float(i - start) / (end - start)) * (end_color[2] - start_color[2]))
+                    )
+                    draw.line((0, i, width-1, i), curr_color)
+
+            for i in range(end, width if mode == 'horizontal' else height):
+                if mode == "horizontal":
+                    draw.line((i, 0, i, height-1), end_color)
+                elif mode == "vertical":
+                    draw.line((0, i, width-1, i), end_color)
+
+            return gradient
+
+        image_a = image_a.convert('RGB')
+        image_b = image_b.convert('RGB')
+
+        offset = int(fuzzy_zone / 2)
+        canvas_width = int(image_a.size[0] + image_b.size[0] - fuzzy_zone) if mode == 'right' or mode == 'left' else image_a.size[0]
+        canvas_height = int(image_a.size[1] + image_b.size[1] - fuzzy_zone) if mode == 'top' or mode == 'bottom' else image_a.size[1]
+        canvas = Image.new('RGB', (canvas_width, canvas_height), (0,0,0))
+
+        im_ax = 0
+        im_ay = 0
+        im_bx = 0
+        im_by = 0
+
+        image_a_mask = None
+        image_b_mask = None
+
+        if mode == 'top':
+
+            image_a_mask = linear_gradient((0,0,0), (255,255,255), image_a.size, 0, fuzzy_zone, 'vertical')
+            image_b_mask = linear_gradient((255,255,255), (0,0,0), image_b.size, int(image_b.size[1] - fuzzy_zone), image_b.size[1], 'vertical')
+            im_ay = image_b.size[1] - fuzzy_zone
+        
+        elif mode == 'bottom':
+
+            image_a_mask = linear_gradient((255,255,255), (0,0,0), image_a.size, int(image_a.size[1] - fuzzy_zone), image_a.size[1], 'vertical')
+            image_b_mask = linear_gradient((0,0,0), (255,255,255), image_b.size, 0, fuzzy_zone, 'vertical').convert('L')
+            im_by = image_a.size[1] - fuzzy_zone
+
+        elif mode == 'left':
+
+            image_a_mask = linear_gradient((0,0,0), (255,255,255), image_a.size, 0, fuzzy_zone, 'horizontal')
+            image_b_mask = linear_gradient((255,255,255), (0,0,0), image_b.size, int(image_b.size[0] - fuzzy_zone), image_b.size[0], 'horizontal')
+            im_ax = image_b.size[0] - fuzzy_zone
+
+
+        elif mode == 'right':
+
+            image_a_mask = linear_gradient((255,255,255), (0,0,0), image_a.size, int(image_a.size[0] - fuzzy_zone), image_a.size[0], 'horizontal')
+            image_b_mask = linear_gradient((0,0,0), (255,255,255), image_b.size, 0, fuzzy_zone, 'horizontal')
+            im_bx = image_b.size[0] - fuzzy_zone
+
+            
+        Image.Image.paste(canvas, image_a, (im_ax, im_ay), image_a_mask.convert('L'))
+        Image.Image.paste(canvas, image_b, (im_bx, im_by), image_b_mask.convert('L'))
+
+        return canvas
+        
         
     # FILTERS
     
@@ -763,7 +869,7 @@ class WAS_Filter_Class():
                 draw.line((0, y, size[0], y), fill=color)
 
         return img
-
+       
     
     # Version 2 optimized based on Mark Setchell's ideas
     def gradient_map(self, image, gradient_map, reverse=False):
@@ -1038,6 +1144,7 @@ class WAS_Shadow_And_Highlight_Adjustment:
         }
     
     RETURN_TYPES = ("IMAGE","IMAGE","IMAGE")
+    RETURN_NAMES = ("image","shadow_map","highlight_map")
     FUNCTION = "apply_shadow_and_highlight"
     
     CATEGORY = "WAS Suite/Image/Adjustment"
@@ -1849,7 +1956,8 @@ class WAS_Load_Image_Batch:
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
+    RETURN_TYPES = ("IMAGE",TEXT_TYPE)
+    RETURN_NAMES = ("image","filename_text")
     FUNCTION = "load_batch_images"
 
     CATEGORY = "WAS Suite/IO"
@@ -1861,14 +1969,14 @@ class WAS_Load_Image_Batch:
         fl = self.BatchImageLoader(path, label, pattern)
         new_paths = fl.image_paths
         if mode == 'single_image':
-            image = fl.get_image_by_id(index)
+            image, filename = fl.get_image_by_id(index)
         else:
-            image = fl.get_next_image()
+            image, filename = fl.get_next_image()
 
         # Update history
         update_history_images(new_paths)
 
-        return (pil2tensor(image), )
+        return (pil2tensor(image), filename)
 
     class BatchImageLoader:
         def __init__(self, directory_path, label, pattern):
@@ -1898,7 +2006,7 @@ class WAS_Load_Image_Batch:
         def get_image_by_id(self, image_id):
             if image_id < 0 or image_id >= len(self.image_paths):
                 raise ValueError(f"\033[34mWAS NS\033[0m Error: Invalid image index `{image_id}`")
-            return Image.open(self.image_paths[image_id])
+            return (Image.open(self.image_paths[image_id]), os.path.basename(self.image_paths[image_id]))
 
         def get_next_image(self):
             if self.index >= len(self.image_paths):
@@ -1909,7 +2017,7 @@ class WAS_Load_Image_Batch:
                 self.index = 0
             print(f'\033[34mWAS NS \033[33m{self.label}\033[0m Index:', self.index)
             self.WDB.insert('Batch Counters', self.label, self.index)
-            return Image.open(image_path)
+            return (Image.open(image_path), os.path.basename(image_path))
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
@@ -1942,7 +2050,8 @@ class WAS_Image_History:
             },
         }
         
-    RETURN_TYPES = ("IMAGE",)
+    RETURN_TYPES = ("IMAGE",TEXT_TYPE)
+    RETURN_NAMES = ("image","filename_text")
     FUNCTION = "image_history"
 
     CATEGORY = "WAS Suite/History"
@@ -1955,15 +2064,53 @@ class WAS_Image_History:
             for path_ in history_paths:
                 paths.update({os.path.join('...'+os.sep+os.path.basename(os.path.dirname(path_)), os.path.basename(path_)): path_})
         if os.path.exists(paths[image]) and paths.__contains__(image):
-            return (pil2tensor(Image.open(paths[image]).convert('RGB')), )
+            return (pil2tensor(Image.open(paths[image]).convert('RGB')), os.path.basename(paths[image]))
         else:
             raise ValueError(f"\033[34mWAS NS\033[0m Error: The image `{image}` does not exist!")
-            return (pil2tensor(Image.new('RGB', (512,512), (0, 0, 0, 0))), )
+            return (pil2tensor(Image.new('RGB', (512,512), (0, 0, 0, 0))), 'null')
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
         return float("NaN")
 
+# IMAGE PADDING
+
+class WAS_Image_Stitch:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image_a": ("IMAGE",),
+                "image_b": ("IMAGE",),
+                "stitch": (["top", "left", "bottom", "right"],),
+                "feathering": ("INT", {"default": 50, "min": 0, "max": 2048, "step": 1}),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "image_stitching"
+
+    CATEGORY = "WAS Suite/Image/Transform"
+
+    def image_stitching(self, image_a, image_b, stitch="right", feathering=50):
+        
+        valid_stitches = ["top", "left", "bottom", "right"]
+        if stitch not in valid_stitches:
+            raise ValueError(f"\033[34mWAS NS\033[0m Error: The stitch mode `{stitch}` is not valid. Valid sitch modes are {', '.join(valid_stitches)}")
+        if feathering > 2048:
+            raise ValueError(f"\033[34mWAS NS\033[0m Error: The stitch feathering of `{feathering}` is too high. Please choose a value between `0` and `2048`")
+            
+        WFilter = WAS_Filter_Class();
+        
+        stitched_image = WFilter.stitch_image(tensor2pil(image_a), tensor2pil(image_b), stitch, feathering)
+        
+        return (pil2tensor(stitched_image), )
+
+
+        
 # IMAGE PADDING
 
 class WAS_Image_Padding:
@@ -2428,9 +2575,9 @@ class WAS_Image_Levels:
             }
         }
     RETURN_TYPES = ("IMAGE",)
-    FUNCTION = "apply_image_levels/Adjustment"
+    FUNCTION = "apply_image_levels"
 
-    CATEGORY = "WAS Suite/Image"
+    CATEGORY = "WAS Suite/Image/Adjustment"
 
     def apply_image_levels(self, image, black_level, mid_level, white_level):
 
@@ -3318,10 +3465,11 @@ class WAS_Load_Image:
                     "STRING", {"default": './ComfyUI/input/example.png', "multiline": False}), }
                 }
 
-    CATEGORY = "WAS Suite/IO"
-
-    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_TYPES = ("IMAGE", "MASK", TEXT_TYPE)
+    RETURN_NAMES = ("image", "mask", "filename_text")
     FUNCTION = "load_image"
+    
+    CATEGORY = "WAS Suite/IO"
 
     def load_image(self, image_path):
 
@@ -3351,7 +3499,7 @@ class WAS_Load_Image:
         else:
             mask = torch.zeros((64, 64), dtype=torch.float32, device="cpu")
             
-        return (image, mask)
+        return (image, mask, os.path.basename(image_path))
 
     def download_image(self, url):
         try:
@@ -3451,8 +3599,8 @@ class WAS_Latent_Upscale:
 
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {"samples": ("LATENT",), "mode": (["bilinear", "bicubic"],),
-                             "factor": ("FLOAT", {"default": 2.0, "min": 0.1, "max": 8.0, "step": 0.1}),
+        return {"required": {"samples": ("LATENT",), "mode": (["area", "bicubic", "bilinear", "nearest"],),
+                             "factor": ("FLOAT", {"default": 2.0, "min": 0.1, "max": 8.0, "step": 0.01}),
                              "align": (["true", "false"], )}}
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "latent_upscale"
@@ -3460,9 +3608,20 @@ class WAS_Latent_Upscale:
     CATEGORY = "WAS Suite/Latent/Transform"
 
     def latent_upscale(self, samples, mode, factor, align):
+        valid_modes = ["area", "bicubic", "bilinear", "nearest"]
+        if mode not in valid_modes:
+            raise ValueError(f"\033[34mWAS NS\033[0m Error: Invalid interpolation mode `{mode}` selected. Valid modes are: {', '.join(valid_modes)}")
+        align = True if align == 'true' else False
+        if not isinstance(factor, float) or factor <= 0:
+            raise ValueError(f"\033[34mWAS NS\033[0m Error: The input `factor` is `{factor}`, but should be a positive or negative float.")
         s = samples.copy()
-        s["samples"] = torch.nn.functional.interpolate(
-            s['samples'], scale_factor=factor, mode=mode, align_corners=(True if align == 'true' else False))
+        shape = s['samples'].shape
+        size = tuple(int(round(dim * factor)) for dim in shape[-2:])
+        if mode in ['linear', 'bilinear', 'bicubic', 'trilinear']:
+            s["samples"] = torch.nn.functional.interpolate(
+                s['samples'], size=size, mode=mode, align_corners=align)
+        else:
+            s["samples"] = torch.nn.functional.interpolate(s['samples'], size=size, mode=mode)
         return (s,)
 
 # LATENT NOISE INJECTION NODE
@@ -3491,7 +3650,8 @@ class WAS_Latent_Noise:
         noise = torch.randn_like(s["samples"]) * noise_std
         s["samples"] = s["samples"] + noise
         return (s,)
-
+        
+        
 
 # MIDAS DEPTH APPROXIMATION NODE
 
@@ -3804,7 +3964,7 @@ class WAS_NSP_CLIPTextEncoder:
         with open(local_pantry, 'r') as f:
             nspterminology = json.load(f)
 
-        if seed > 0 or seed < 1:
+        if seed > 0 or seed < 0:
             random.seed(seed)
 
         # Parse Text
@@ -4311,7 +4471,12 @@ class WAS_Text_Save:
         # Ensure path exists
         if not os.path.exists(path):
             print(
-                f'\033[34mWAS NS\033[0m Error: The path `{path}` doesn\'t exist!')
+                f'\033[34mWAS NS\033[0m Warning: The path `{path}` doesn\'t exist! Creating it...')
+            try:
+                os.mkdir(path)
+            except OSError as e:
+                print(
+                    f'\033[34mWAS NS\033[0m Warning: The path `{path}` could not be created! Is there write access?\n{e}')
 
         # Ensure content to save
         if text.strip == '':
@@ -4421,7 +4586,7 @@ class WAS_Text_to_Conditioning:
     RETURN_TYPES = ("CONDITIONING",)
     FUNCTION = "text_to_conditioning"
 
-    CATEGORY = "WAS Suite/Text"
+    CATEGORY = "WAS Suite/Text/Operations"
 
     def text_to_conditioning(self, clip, text):
         return ([[clip.encode(text), {}]], )
@@ -4669,7 +4834,7 @@ class WAS_Text_To_String:
     RETURN_TYPES = ("STRING",)
     FUNCTION = "text_to_string"
 
-    CATEGORY = "WAS Suite/Text"
+    CATEGORY = "WAS Suite/Text/Operations"
 
     def text_to_string(self, text):
         return (text, )
@@ -4816,6 +4981,448 @@ class WAS_BLIP_Analyze_Image:
             return ('Invalid BLIP mode!', )
         
 
+# SAM MODEL LOADER
+class WAS_SAM_Model_Loader:
+    def __init__(self):
+        pass
+    
+    @classmethod
+    def INPUT_TYPES(self):
+        return {
+            "required": {
+                "model_size": (["ViT-H (91M)", "ViT-L (308M)", "ViT-B (636M)"], ),
+            }
+        }
+    
+    RETURN_TYPES = ("SAM_MODEL",)
+    FUNCTION = "sam_load_model"
+    
+    CATEGORY = "WAS Suite/Image/AI/SAM"
+    
+    def sam_load_model(self, model_size):
+        conf = getSuiteConfig()
+        
+        model_filename_mapping = {
+            "ViT-H (91M)": "sam_vit_h_4b8939.pth",
+            "ViT-L (308M)": "sam_vit_l_0b3195.pth",
+            "ViT-B (636M)": "sam_vit_b_01ec64.pth",
+        }
+        
+        model_url_mapping = {
+            "ViT-H (91M)": conf['sam_model_vith_url'] if conf.__contains__('sam_model_vith_url') else r"https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
+            "ViT-L (308M)": conf['sam_model_vitl_url'] if conf.__contains__('sam_model_vitl_url') else r"https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth",
+            "ViT-B (636M)": conf['sam_model_vitb_url'] if conf.__contains__('sam_model_vitb_url') else r"https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth",
+        }
+        
+        model_url = model_url_mapping[model_size]
+        model_filename = model_filename_mapping[model_size]
+    
+        if ( 'GitPython' not in packages() ):
+            print("\033[34mWAS NS:\033[0m Installing SAM dependencies...")
+            subprocess.check_call([sys.executable, '-m', 'pip', '-q', 'install', 'gitpython'])
+        
+        if not os.path.exists(os.path.join(WAS_SUITE_ROOT, 'repos'+os.sep+'SAM')):
+            from git.repo.base import Repo
+            print("\033[34mWAS NS:\033[0m Installing SAM...")
+            Repo.clone_from('https://github.com/facebookresearch/segment-anything', os.path.join(WAS_SUITE_ROOT, 'repos'+os.sep+'SAM'))
+        
+        sys.path.append(os.path.join(WAS_SUITE_ROOT, 'repos'+os.sep+'SAM'))
+        
+        sam_dir = os.path.join(( os.getcwd()+os.sep+'ComfyUI' if not os.getcwd().startswith('/content') else os.getcwd() ), 'models'+os.sep+'sam')
+        if not os.path.exists(sam_dir):
+            os.mkdir(sam_dir)
+        
+        sam_file = os.path.join(sam_dir, model_filename)
+        if not os.path.exists(sam_file):
+            print("\033[34mWAS NS:\033[0m Selected SAM model not found. Downloading...")
+            r = requests.get(model_url, allow_redirects=True)
+            open(sam_file, 'wb').write(r.content)
+        
+        from segment_anything import build_sam
+        sam_model = build_sam(checkpoint=sam_file)
+        
+        return (sam_model, )
+
+
+# SAM PARAMETERS
+class WAS_SAM_Parameters:
+    def __init__(self):
+        pass
+    
+    @classmethod
+    def INPUT_TYPES(self):
+        return {
+            "required": {
+                "points": ("STRING", {"default": "[128, 128]; [0, 0]", "multiline": False}),
+                "labels": ("STRING", {"default": "[1, 0]", "multiline": False}),
+            }
+        }
+    
+    RETURN_TYPES = ("SAM_PARAMETERS",)
+    FUNCTION = "sam_parameters"
+    
+    CATEGORY = "WAS Suite/Image/AI/SAM"
+    
+    def sam_parameters(self, points, labels):
+        parameters = {
+            "points": np.asarray(np.matrix(points)),
+            "labels": np.array(np.matrix(labels))[0]
+        }
+        
+        return (parameters,)
+
+
+# SAM COMBINE PARAMETERS
+class WAS_SAM_Combine_Parameters:
+    def __init__(self):
+        pass
+    
+    @classmethod
+    def INPUT_TYPES(self):
+        return {
+            "required": {
+                "sam_parameters_a": ("SAM_PARAMETERS",),
+                "sam_parameters_b": ("SAM_PARAMETERS",),
+            }
+        }
+    
+    RETURN_TYPES = ("SAM_PARAMETERS",)
+    FUNCTION = "sam_combine_parameters"
+    
+    CATEGORY = "WAS Suite/Image/AI/SAM"
+    
+    def sam_combine_parameters(self, sam_parameters_a, sam_parameters_b):
+        parameters = {
+            "points": np.concatenate(
+                (sam_parameters_a["points"],
+                sam_parameters_b["points"]),
+                axis=0
+            ),
+            "labels": np.concatenate(
+                (sam_parameters_a["labels"],
+                sam_parameters_b["labels"])
+            )
+        }
+        
+        return (parameters,)
+
+
+# SAM IMAGE MASK
+class WAS_SAM_Image_Mask:
+    def __init__(self):
+        pass
+    
+    @classmethod
+    def INPUT_TYPES(self):
+        return {
+            "required": {
+                "sam_model": ("SAM_MODEL",),
+                "sam_parameters": ("SAM_PARAMETERS",),
+                "image": ("IMAGE",),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "MASK",)
+    FUNCTION = "sam_image_mask"
+    
+    CATEGORY = "WAS Suite/Image/AI/SAM"
+    
+    def sam_image_mask(self, sam_model, sam_parameters, image):
+        image = tensor2sam(image)
+        points = sam_parameters["points"]
+        labels = sam_parameters["labels"]
+        
+        from segment_anything import SamPredictor
+        
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        sam_model.to(device=device)
+        
+        predictor = SamPredictor(sam_model)
+        predictor.set_image(image)
+        
+        masks, scores, logits = predictor.predict(
+            point_coords=points,
+            point_labels=labels,
+            multimask_output=False
+        )
+        
+        sam_model.to(device='cpu')
+        
+        mask = np.expand_dims(masks, axis=-1)
+        
+        image = np.repeat(mask, 3, axis=-1)
+        image = torch.from_numpy(image)
+        
+        mask = torch.from_numpy(mask)
+        mask = mask.squeeze(2)
+        mask = mask.squeeze().to(torch.float32)
+        
+        return (image, mask, )
+
+
+# IMAGE BOUNDS
+class WAS_Image_Bounds:
+    def __init__(self):
+        pass
+    
+    @classmethod
+    def INPUT_TYPES(self):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE_BOUNDS",)
+    FUNCTION = "image_bounds"
+    
+    CATEGORY = "WAS Suite/Image/Bound"
+    
+    def image_bounds(self, image):
+        _, height, width, _ = image.shape
+        
+        image_bounds = [0, height - 1, 0, width - 1]
+        
+        return (image_bounds,)
+
+
+# INSET IMAGE BOUNDS
+class WAS_Inset_Image_Bounds:
+    def __init__(self):
+        pass
+    
+    @classmethod
+    def INPUT_TYPES(self):
+        return {
+            "required": {
+                "image_bounds": ("IMAGE_BOUNDS",),
+                "inset_left": ("INT", {"default": 64, "min": 0, "max": 0xffffffffffffffff}),
+                "inset_right": ("INT", {"default": 64, "min": 0, "max": 0xffffffffffffffff}),
+                "inset_top": ("INT", {"default": 64, "min": 0, "max": 0xffffffffffffffff}),
+                "inset_bottom": ("INT", {"default": 64, "min": 0, "max": 0xffffffffffffffff}),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE_BOUNDS",)
+    FUNCTION = "inset_image_bounds"
+    
+    CATEGORY = "WAS Suite/Image/Bound"
+    
+    def inset_image_bounds(self, image_bounds, inset_left, inset_right, inset_top, inset_bottom):
+        # Unpack the image bounds
+        rmin, rmax, cmin, cmax = image_bounds
+        
+        # Apply insets
+        rmin = rmin + inset_top
+        rmax = rmax - inset_bottom
+        cmin = cmin + inset_left
+        cmax = cmax - inset_right
+
+        # Check if the resulting bounds are valid
+        if rmin > rmax or cmin > cmax:
+            raise ValueError("Invalid insets provided. Please make sure the insets do not exceed the image bounds.")
+        
+        image_bounds = [rmin, rmax, cmin, cmax]
+        
+        return (image_bounds,)
+
+
+# WAS BOUNDED IMAGE BLEND
+class WAS_Bounded_Image_Blend:
+    def __init__(self):
+        pass
+    
+    @classmethod
+    def INPUT_TYPES(self):
+        return {
+            "required": {
+                "target": ("IMAGE",),
+                "target_bounds": ("IMAGE_BOUNDS",),
+                "source": ("IMAGE",),
+                "blend_factor": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0}),
+                "feathering": ("INT", {"default": 16, "min": 0, "max": 0xffffffffffffffff}),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "bounded_image_blend"
+    
+    CATEGORY = "WAS Suite/Image/Bound"
+    
+    def bounded_image_blend(self, target, target_bounds, source, blend_factor, feathering):
+        # Convert PyTorch tensors to PIL images
+        target_pil = Image.fromarray((target.squeeze(0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8))
+        source_pil = Image.fromarray((source.squeeze(0).cpu().numpy() * 255).astype(np.uint8))
+
+        # Extract the target bounds
+        rmin, rmax, cmin, cmax = target_bounds
+
+        # Calculate the dimensions of the target bounds
+        width = cmax - cmin + 1
+        height = rmax - rmin + 1
+
+        # Resize the source image to match the dimensions of the target bounds
+        source_resized = source_pil.resize((width, height), Image.ANTIALIAS)
+
+        # Create the blend mask with the same size as the target image
+        blend_mask = Image.new('L', target_pil.size, 0)
+
+        # Create the feathered mask portion the size of the target bounds
+        if feathering > 0:
+            inner_mask = Image.new('L', (width - (2 * feathering), height - (2 * feathering)), 255)
+            inner_mask = ImageOps.expand(inner_mask, border=feathering, fill=0)
+            inner_mask = inner_mask.filter(ImageFilter.GaussianBlur(radius=feathering))
+        else:
+            inner_mask = Image.new('L', (width, height), 255)
+
+        # Paste the feathered mask portion into the blend mask at the target bounds position
+        blend_mask.paste(inner_mask, (cmin, rmin))
+
+        # Create a blank image with the same size and mode as the target
+        source_positioned = Image.new(target_pil.mode, target_pil.size)
+
+        # Paste the source image onto the blank image using the target bounds
+        source_positioned.paste(source_resized, (cmin, rmin))
+
+        # Create a blend mask using the blend_mask and blend factor
+        blend_mask = blend_mask.point(lambda p: p * blend_factor).convert('L')
+
+        # Blend the source and target images using the blend mask
+        result = Image.composite(source_positioned, target_pil, blend_mask)
+
+        # Convert the result back to a PyTorch tensor
+        result = torch.from_numpy(np.array(result).astype(np.float32) / 255).unsqueeze(0)
+        
+        return (result,)
+
+
+# BOUNDED IMAGE CROP
+class WAS_Bounded_Image_Crop:
+    def __init__(self):
+        pass
+    
+    @classmethod
+    def INPUT_TYPES(self):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "image_bounds": ("IMAGE_BOUNDS",),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "bounded_image_crop"
+    
+    CATEGORY = "WAS Suite/Image/Bound"
+    
+    def bounded_image_crop(self, image, image_bounds):
+        # Unpack the image bounds
+        rmin, rmax, cmin, cmax = image_bounds
+
+        # Check if the provided bounds are valid
+        if rmin > rmax or cmin > cmax:
+            raise ValueError("Invalid bounds provided. Please make sure the bounds are within the image dimensions.")
+
+        # Crop the image using the provided bounds and return it
+        return (image[:, rmin:rmax+1, cmin:cmax+1, :],)
+
+
+# WAS BOUNDED IMAGE BLEND WITH MASK
+class WAS_Bounded_Image_Blend_With_Mask:
+    def __init__(self):
+        pass
+    
+    @classmethod
+    def INPUT_TYPES(self):
+        return {
+            "required": {
+                "target": ("IMAGE",),
+                "target_mask": ("MASK",),
+                "target_bounds": ("IMAGE_BOUNDS",),
+                "source": ("IMAGE",),
+                "blend_factor": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0}),
+                "feathering": ("INT", {"default": 16, "min": 0, "max": 0xffffffffffffffff}),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "bounded_image_blend_with_mask"
+    
+    CATEGORY = "WAS Suite/Image/Bound"
+    
+    def bounded_image_blend_with_mask(self, target, target_mask, target_bounds, source, blend_factor, feathering):
+        # Convert PyTorch tensors to PIL images
+        target_pil = Image.fromarray((target.squeeze(0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8))
+        target_mask_pil = Image.fromarray((target_mask.cpu().numpy() * 255).astype(np.uint8), mode='L')
+        source_pil = Image.fromarray((source.squeeze(0).cpu().numpy() * 255).astype(np.uint8))
+
+        # Extract the target bounds
+        rmin, rmax, cmin, cmax = target_bounds
+
+        # Create a blank image with the same size and mode as the target
+        source_positioned = Image.new(target_pil.mode, target_pil.size)
+
+        # Paste the source image onto the blank image using the target bounds
+        source_positioned.paste(source_pil, (cmin, rmin))
+
+        # Create a blend mask using the target mask and blend factor
+        blend_mask = target_mask_pil.point(lambda p: p * blend_factor).convert('L')
+
+        # Apply feathering (Gaussian blur) to the blend mask if feather_amount is greater than 0
+        if feathering > 0:
+            blend_mask = blend_mask.filter(ImageFilter.GaussianBlur(radius=feathering))
+
+        # Blend the source and target images using the blend mask
+        result = Image.composite(source_positioned, target_pil, blend_mask)
+
+        # Convert the result back to a PyTorch tensor
+        result_tensor = torch.from_numpy(np.array(result).astype(np.float32) / 255).unsqueeze(0)
+
+        return (result_tensor,)
+
+
+# WAS BOUNDED IMAGE CROP WITH MASK
+class WAS_Bounded_Image_Crop_With_Mask:
+    def __init__(self):
+        pass
+    
+    @classmethod
+    def INPUT_TYPES(self):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "mask": ("MASK",),
+                "padding_left": ("INT", {"default": 64, "min": 0, "max": 0xffffffffffffffff}),
+                "padding_right": ("INT", {"default": 64, "min": 0, "max": 0xffffffffffffffff}),
+                "padding_top": ("INT", {"default": 64, "min": 0, "max": 0xffffffffffffffff}),
+                "padding_bottom": ("INT", {"default": 64, "min": 0, "max": 0xffffffffffffffff}),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "IMAGE_BOUNDS",)
+    FUNCTION = "bounded_image_crop_with_mask"
+    
+    CATEGORY = "WAS Suite/Image/Bound"
+    
+    def bounded_image_crop_with_mask(self, image, mask, padding_left, padding_right, padding_top, padding_bottom):
+        # Get the bounding box coordinates of the mask
+        rows = torch.any(mask, axis=1)
+        cols = torch.any(mask, axis=0)
+        rmin, rmax = torch.where(rows)[0][[0, -1]]
+        cmin, cmax = torch.where(cols)[0][[0, -1]]
+        
+        # Apply padding
+        rmin = max(rmin - padding_top, 0)
+        rmax = min(rmax + padding_bottom, mask.shape[0] - 1)
+        cmin = max(cmin - padding_left, 0)
+        cmax = min(cmax + padding_right, mask.shape[1] - 1)
+        
+        bounds = [rmin, rmax, cmin, cmax]
+        
+        # Crop the image using the computed coordinates and return it
+        return (image[:, rmin:rmax+1, cmin:cmax+1, :], bounds,)
+
+
 #! NUMBERS
 
 
@@ -4892,7 +5499,7 @@ class WAS_Constant_Number:
             elif number_type == 'bool':
                 return ((1 if int(number) > 0 else 0), )
             else:
-                return number
+                return (number, )
 
 
 # NUMBER TO SEED
@@ -5077,6 +5684,28 @@ class WAS_Number_PI:
 
     def number_pi(self):
         return (math.pi, )
+        
+# Boolean
+
+class WAS_Boolean:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "boolean_number": ("INT", {"default":1, "min":0, "max":1, "step":1}),
+            }
+        }
+
+    RETURN_TYPES = ("NUMBER",)
+    FUNCTION = "return_boolean"
+
+    CATEGORY = "WAS Suite/Logic"
+
+    def return_boolean(self, boolean_number=1):
+        return (int(boolean_number), )
 
 # NUMBER OPERATIONS
 
@@ -5138,6 +5767,8 @@ class WAS_Number_Operation:
 
 #! MISC
 
+# Image Width and Height to Number
+
 class WAS_Image_Size_To_Number:
     def __init__(self):
         pass
@@ -5151,6 +5782,7 @@ class WAS_Image_Size_To_Number:
         }
 
     RETURN_TYPES = ("NUMBER", "NUMBER",)
+    RETURN_NAMES = ("width_num", "height_num",)
     FUNCTION = "image_width_height"
 
     CATEGORY = "WAS Suite/Number/Operations"
@@ -5160,10 +5792,11 @@ class WAS_Image_Size_To_Number:
         if image.size:
             return( image.size[0], image.size[1] )
         return ( 0, 0 )
-
-# INPUT SWITCH
-
-class WAS_Input_Switch:
+        
+        
+# Latent Width and Height to Number
+        
+class WAS_Latent_Size_To_Number:
     def __init__(self):
         pass
 
@@ -5171,23 +5804,237 @@ class WAS_Input_Switch:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "input_a": ("*",),
-                "input_b": ("*",),
-                "boolean": ("NUMBER",),
+                "samples": ("LATENT",),
             }
         }
 
-    RETURN_TYPES = ("*",)
-    FUNCTION = "input_switch"
+    RETURN_TYPES = ("NUMBER","NUMBER")
+    RETURN_NAMES = ("tensor_w_num","tensor_h_num")
+    FUNCTION = "latent_width_height"
 
-    CATEGORY = "WAS Suite/Operations"
+    CATEGORY = "WAS Suite/Number/Operations"
+    
+    def latent_width_height(self, samples):
+        size_dict = {}
+        i = 0
+        for tensor in samples['samples'][0]:
+            if not isinstance(tensor, torch.Tensor):
+                raise ValueError(f'\033[34mWAS NS\033[33m Error: Input should be a torch.Tensor')
+            shape = tensor.shape
+            tensor_height = shape[-2]
+            tensor_width = shape[-1]
+            print(tensor)
+            size_dict.update({i:[tensor_width, tensor_height]})
+        return (size_dict[0][0], size_dict[0][1])
+        
+            
+# LATENT INPUT SWITCH
 
-    def input_switch(self, input_a, input_b, boolean=0):
+class WAS_Latent_Input_Switch:
+    def __init__(self):
+        pass
 
-        if int(boolean) == 1:
-            return (input_a, )
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "latent_a": ("LATENT",),
+                "latent_b": ("LATENT",),
+                "boolean_number": ("NUMBER",),
+            }
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "latent_input_switch"
+
+    CATEGORY = "WAS Suite/Logic"
+
+    def latent_input_switch(self, latent_a, latent_b, boolean_number=1):
+
+        if int(boolean_number) == 1:
+            return (latent_a, )
         else:
-            return (input_b, )
+            return (latent_b, )
+            
+# NUMBER INPUT CONDITION
+
+class WAS_Number_Input_Condition:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "number_a": ("NUMBER",),
+                "number_b": ("NUMBER",),
+                "comparison": (["greater-than", "greater-than or equels", "less-than", "less-than or equals", "equals", "does not equal", "divisible by", "if A odd", "if A even", "if A prime", "factor of"],),
+            }
+        }
+
+    RETURN_TYPES = ("NUMBER",)
+    FUNCTION = "number_input_condition"
+
+    CATEGORY = "WAS Suite/Logic"
+
+    def number_input_condition(self, number_a, number_b, comparison="greater-than"):
+
+        if comparison:
+            if comparison == 'greater-than':
+                result = number_a if number_a > number_b else number_b
+            elif comparison == 'greater-than or equals':
+                result = number_a if number_a >= number_b else number_b
+            elif comparison == 'less-than':
+                result = number_a if number_a < number_b else number_b
+            elif comparison == 'less-than or equals':
+                result = number_a if number_a <= number_b else number_b
+            elif comparison == 'equals':
+                result = number_a if number_a == number_b else number_b
+            elif comparison == 'does not equal':
+                result = number_a if number_a != number_b else number_b
+            elif comparison == 'divisible by':
+                result = number_a if number_b % number_a == 0 else number_b
+            elif comparison == 'if A odd':
+                result = number_a if number_a % 2 != 0 else number_b
+            elif comparison == 'if A even':
+                result = number_a if number_a % 2 == 0 else number_b
+            elif comparison == 'if A prime':
+                result = number_a if self.is_prime(number_a) else number_b
+            elif comparison == 'factor of':
+                result = number_a if number_b % number_a == 0 else number_b
+            else:
+                result = number_a
+
+            print(result)
+
+        return (result,)
+        
+    def is_prime(self, n):
+        if n <= 1:
+            return False
+        elif n <= 3:
+            return True
+        elif n % 2 == 0 or n % 3 == 0:
+            return False
+        i = 5
+        while i * i <= n:
+            if n % i == 0 or n % (i + 2) == 0:
+                return False
+            i += 6
+        return True
+        
+# NUMBER INPUT SWITCH
+
+class WAS_Number_Input_Switch:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "number_a": ("NUMBER",),
+                "number_b": ("NUMBER",),
+                "boolean_number": ("NUMBER",),
+            }
+        }
+
+    RETURN_TYPES = ("NUMBER",)
+    FUNCTION = "number_input_switch"
+
+    CATEGORY = "WAS Suite/Logic"
+
+    def number_input_switch(self, number_a, number_b, boolean_number=1):
+
+        if int(boolean_number) == 1:
+            return (number_a, )
+        else:
+            return (number_b, )
+            
+            
+# IMAGE INPUT SWITCH
+
+class WAS_Image_Input_Switch:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image_a": ("IMAGE",),
+                "image_b": ("IMAGE",),
+                "boolean_number": ("NUMBER",),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "image_input_switch"
+
+    CATEGORY = "WAS Suite/Logic"
+
+    def image_input_switch(self, image_a, image_b, boolean_number=1):
+
+        if int(boolean_number) == 1:
+            return (image_a, )
+        else:
+            return (image_b, )
+            
+# CONDITIONING INPUT SWITCH
+
+class WAS_Conditioning_Input_Switch:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "conditioning_a": ("CONDITIONING",),
+                "conditioning_b": ("CONDITIONING",),
+                "boolean_number": ("NUMBER",),
+            }
+        }
+
+    RETURN_TYPES = ("CONDITIONING",)
+    FUNCTION = "conditioning_input_switch"
+
+    CATEGORY = "WAS Suite/Logic"
+
+    def conditioning_input_switch(self, conditioning_a, conditioning_b, boolean_number=1):
+
+        if int(boolean_number) == 1:
+            return (conditioning_a, )
+        else:
+            return (conditioning_b, )   
+            
+# TEXT INPUT SWITCH
+
+class WAS_Text_Input_Switch:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text_a": (TEXT_TYPE,),
+                "text_b": (TEXT_TYPE,),
+                "boolean_number": ("NUMBER",),
+            }
+        }
+
+    RETURN_TYPES = (TEXT_TYPE,)
+    FUNCTION = "text_input_switch"
+
+    CATEGORY = "WAS Suite/Logic"
+
+    def text_input_switch(self, text_a, text_b, boolean_number=1):
+
+        if int(boolean_number) == 1:
+            return (text_a, )
+        else:
+            return (text_b, )
 
 
 # DEBUG INPUT TO CONSOLE
@@ -5226,9 +6073,12 @@ class WAS_Debug_Number_to_Console:
 # NODE MAPPING
 NODE_CLASS_MAPPINGS = {
     "CLIPTextEncode (NSP)": WAS_NSP_CLIPTextEncoder,
+    "Conditioning Input Switch": WAS_Conditioning_Input_Switch,
     "Constant Number": WAS_Constant_Number,
     "Debug Number to Console": WAS_Debug_Number_to_Console,
     "Dictionary to Console": WAS_Dictionary_To_Console,
+    "Latent Input Switch": WAS_Latent_Input_Switch,
+    "Logic Boolean": WAS_Boolean,
     "Image Analyze": WAS_Image_Analyze,
     "Image Blank": WAS_Image_Blank,
     "Image Blend by Mask": WAS_Image_Blend_Mask,
@@ -5247,6 +6097,7 @@ NODE_CLASS_MAPPINGS = {
     "Image Generate Gradient": WAS_Image_Generate_Gradient,
     "Image High Pass Filter": WAS_Image_High_Pass_Filter,
     "Image History Loader": WAS_Image_History,
+    "Image Input Switch": WAS_Image_Input_Switch,
     "Image Levels Adjustment": WAS_Image_Levels,
     "Image Load": WAS_Load_Image,
     "Image Median Filter": WAS_Image_Median_Filter,
@@ -5265,6 +6116,7 @@ NODE_CLASS_MAPPINGS = {
     "Image Select Color": WAS_Image_Select_Color,
     "Image Shadows and Highlights": WAS_Shadow_And_Highlight_Adjustment,
     "Image Size to Number": WAS_Image_Size_To_Number,
+    "Image Stitch": WAS_Image_Stitch, 
     "Image Style Filter": WAS_Image_Style_Filter,
     "Image Threshold": WAS_Image_Threshold,
     "Image Transpose": WAS_Image_Transpose,
@@ -5273,6 +6125,7 @@ NODE_CLASS_MAPPINGS = {
     "Image Voronoi Noise Filter": WAS_Image_Voronoi_Noise_Filter,
     "KSampler (WAS)": WAS_KSampler,
     "Latent Noise Injection": WAS_Latent_Noise,
+    "Latent Size to Number": WAS_Latent_Size_To_Number,
     "Latent Upscale by Factor (WAS)": WAS_Latent_Upscale,
     "Load Image Batch": WAS_Load_Image_Batch,
     "Load Text File": WAS_Text_Load_From_File,
@@ -5280,6 +6133,8 @@ NODE_CLASS_MAPPINGS = {
     "MiDaS Mask Image": MiDaS_Background_Foreground_Removal,
     "Number Operation": WAS_Number_Operation,
     "Number to Float": WAS_Number_To_Float,
+    "Number Input Switch": WAS_Number_Input_Switch,
+    "Number Input Condition": WAS_Number_Input_Condition,
     "Number PI": WAS_Number_PI,
     "Number to Int": WAS_Number_To_Int,
     "Number to Seed": WAS_Number_To_Seed,
@@ -5291,6 +6146,16 @@ NODE_CLASS_MAPPINGS = {
     "Seed": WAS_Seed,
     "Tensor Batch to Image": WAS_Tensor_Batch_to_Image,
     "BLIP Analyze Image": WAS_BLIP_Analyze_Image,
+    "SAM Model Loader": WAS_SAM_Model_Loader,
+    "SAM Parameters": WAS_SAM_Parameters,
+    "SAM Parameters Combine": WAS_SAM_Combine_Parameters,
+    "SAM Image Mask": WAS_SAM_Image_Mask,
+    "Image Bounds": WAS_Image_Bounds,
+    "Inset Image Bounds": WAS_Inset_Image_Bounds,
+    "Bounded Image Blend": WAS_Bounded_Image_Blend,
+    "Bounded Image Blend with Mask": WAS_Bounded_Image_Blend_With_Mask,
+    "Bounded Image Crop": WAS_Bounded_Image_Crop,
+    "Bounded Image Crop with Mask": WAS_Bounded_Image_Crop_With_Mask,
     "Text Dictionary Update": WAS_Dictionary_Update,
     "Text Add Tokens": WAS_Text_Add_Tokens,
     "Text Add Token by Input": WAS_Text_Add_Token_Input,
@@ -5299,6 +6164,7 @@ NODE_CLASS_MAPPINGS = {
     "Text Find and Replace by Dictionary": WAS_Search_and_Replace_Dictionary,
     "Text Find and Replace Input": WAS_Search_and_Replace_Input,
     "Text Find and Replace": WAS_Search_and_Replace,
+    "Text Input Switch": WAS_Text_Input_Switch,
     "Text Multiline": WAS_Text_Multiline,
     "Text Parse A1111 Embeddings": WAS_Text_Parse_Embeddings_By_Name,
     "Text Parse Noodle Soup Prompts": WAS_Text_Parse_NSP,
